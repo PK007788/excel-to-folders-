@@ -8,6 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
+# pyrefly: ignore [missing-import]
 import customtkinter as ctk
 
 from processor import DatasetProcessor, ProcessingConfig, ProcessingOptions

@@ -32,7 +32,7 @@ def write_summary_report(output_folder: Path, stats: "ProcessingStats") -> Path:
         f"Duplicate Filenames Renamed: {stats.duplicate_filenames_renamed}",
         f"Skipped Rows: {stats.skipped_rows}",
         f"Processing Time: {format_duration(stats.processing_time_seconds)}",
-    ]
+    ])
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
