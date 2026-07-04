@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".csv"}
 
 
 def is_blank(value: object) -> bool:
@@ -45,13 +45,13 @@ def validate_directory(path: Path, label: str) -> None:
 
 
 def validate_excel_file(path: Path) -> None:
-    """Validate that a path exists and is a supported Excel workbook."""
+    """Validate that a path exists and is a supported Excel workbook or CSV."""
     if not path.exists() or not path.is_file():
-        raise ValueError(f"Excel workbook does not exist or is not a file: {path}")
+        raise ValueError(f"Data file does not exist or is not a file: {path}")
 
-    if path.suffix.lower() not in EXCEL_EXTENSIONS:
-        allowed = ", ".join(sorted(EXCEL_EXTENSIONS))
-        raise ValueError(f"Excel workbook must be one of: {allowed}")
+    if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        allowed = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise ValueError(f"Data file must be one of: {allowed}")
 
 
 def open_folder(path: Path) -> None:

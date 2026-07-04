@@ -1,4 +1,4 @@
-"""Excel workbook reader for dataset labels."""
+"""Data file reader for dataset labels (supports Excel and CSV)."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ import pandas as pd
 
 from utils import is_blank, normalize_label
 
+CSV_SHEET_NAME = "data"
+
 
 @dataclass(frozen=True)
 class ImageRecord:
-    """One image row from an Excel worksheet."""
+    """One image row from a worksheet or CSV."""
 
     image_name: str
     label: str
@@ -22,7 +24,7 @@ class ImageRecord:
 
 @dataclass(frozen=True)
 class MultiLabelRecord:
-    """One row from an Excel worksheet with multiple image columns and binary label columns."""
+    """One row with multiple image columns and binary label columns."""
 
     image_names: list[str]
     active_labels: list[str]
@@ -30,13 +32,45 @@ class MultiLabelRecord:
 
 
 class ExcelReader:
-    """Read worksheet names and image-label rows from columns B and C."""
+    """Read data from Excel workbooks or CSV files."""
 
     def __init__(self, workbook_path: Path) -> None:
         self.workbook_path = workbook_path
 
+    def _is_csv(self) -> bool:
+        """Check whether the data file is a CSV."""
+        return self.workbook_path.suffix.lower() == ".csv"
+
+    def _read_frame(
+        self,
+        sheet_name: str | None = None,
+        nrows: int | None = None,
+        dtype=str,
+    ) -> pd.DataFrame:
+        """Read a DataFrame from CSV or from the given Excel sheet."""
+        if self._is_csv():
+            return pd.read_csv(
+                self.workbook_path,
+                header=0,
+                dtype=dtype,
+                nrows=nrows,
+            )
+        else:
+            kwargs: dict = {
+                "header": 0,
+                "dtype": dtype,
+                "engine": "openpyxl",
+            }
+            if sheet_name is not None:
+                kwargs["sheet_name"] = sheet_name
+            if nrows is not None:
+                kwargs["nrows"] = nrows
+            return pd.read_excel(self.workbook_path, **kwargs)
+
     def get_sheet_names(self) -> list[str]:
-        """Return every worksheet name in workbook order."""
+        """Return worksheet names, or ['data'] for CSV files."""
+        if self._is_csv():
+            return [CSV_SHEET_NAME]
         with pd.ExcelFile(self.workbook_path, engine="openpyxl") as workbook:
             return list(workbook.sheet_names)
 
@@ -45,13 +79,7 @@ class ExcelReader:
     ) -> Iterator[ImageRecord]:
         """Yield records from the specified file and label columns."""
         try:
-            frame = pd.read_excel(
-                self.workbook_path,
-                sheet_name=sheet_name,
-                header=0,
-                dtype=str,
-                engine="openpyxl",
-            )
+            frame = self._read_frame(sheet_name=sheet_name)
         except Exception:
             return
 
@@ -82,13 +110,7 @@ class ExcelReader:
 
         for sheet_name in sheet_names:
             try:
-                frame = pd.read_excel(
-                    self.workbook_path,
-                    sheet_name=sheet_name,
-                    header=0,
-                    dtype=str,
-                    engine="openpyxl",
-                )
+                frame = self._read_frame(sheet_name=sheet_name)
                 total += int(frame.dropna(how="all").shape[0])
             except Exception:
                 continue
@@ -98,13 +120,7 @@ class ExcelReader:
     def get_column_names(self, sheet_name: str) -> list[str]:
         """Return column header names for the given sheet."""
         try:
-            frame = pd.read_excel(
-                self.workbook_path,
-                sheet_name=sheet_name,
-                header=0,
-                nrows=0,
-                engine="openpyxl",
-            )
+            frame = self._read_frame(sheet_name=sheet_name, nrows=0)
         except Exception:
             return []
 
@@ -115,14 +131,7 @@ class ExcelReader:
     ) -> tuple[list[str], list[list[str]]]:
         """Return (headers, rows) for a data preview table."""
         try:
-            frame = pd.read_excel(
-                self.workbook_path,
-                sheet_name=sheet_name,
-                header=0,
-                dtype=str,
-                nrows=max_rows,
-                engine="openpyxl",
-            )
+            frame = self._read_frame(sheet_name=sheet_name, nrows=max_rows)
         except Exception:
             return [], []
 
@@ -141,13 +150,7 @@ class ExcelReader:
     ) -> Iterator[MultiLabelRecord]:
         """Yield MultiLabelRecord for each row with binary label columns."""
         try:
-            frame = pd.read_excel(
-                self.workbook_path,
-                sheet_name=sheet_name,
-                header=0,
-                dtype=str,
-                engine="openpyxl",
-            )
+            frame = self._read_frame(sheet_name=sheet_name)
         except Exception:
             return
 
@@ -183,4 +186,4 @@ class ExcelReader:
                 image_names=image_names,
                 active_labels=active_labels,
                 row_number=int(index) + 2,
-            )
+            )

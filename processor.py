@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from excel_reader import ExcelReader
+from excel_reader import CSV_SHEET_NAME, ExcelReader
 from file_manager import FileManager
 from logger import ProcessingLogger
 from reports import write_missing_image_report, write_summary_report
@@ -132,17 +132,23 @@ class DatasetProcessor:
                     break
 
                 self._send_status(f"Processing {sheet_name}")
-                sanitized_sheet_name = sheet_name.replace(" ", "")
-                base_folder = self.config.dataset_folder / sanitized_sheet_name
 
-                if not base_folder.exists() or not base_folder.is_dir():
-                    base_folder = self.config.dataset_folder / sheet_name
+                # For CSV files (single synthetic sheet), use dataset folder directly.
+                # For Excel files, look for a subfolder matching the sheet name.
+                if sheet_name == CSV_SHEET_NAME:
+                    base_folder = self.config.dataset_folder
+                else:
+                    sanitized_sheet_name = sheet_name.replace(" ", "")
+                    base_folder = self.config.dataset_folder / sanitized_sheet_name
+
+                    if not base_folder.exists() or not base_folder.is_dir():
+                        base_folder = self.config.dataset_folder / sheet_name
 
                 if not base_folder.exists() or not base_folder.is_dir():
                     self._record_missing(
                         sheet_name=sheet_name,
                         image_name="",
-                        reason=f"Matching folder not found: {self.config.dataset_folder / sheet_name}",
+                        reason=f"Matching folder not found: {base_folder}",
                         log=log,
                     )
                     self._emit_progress(sheet_name, "", start_time, total_work_items)
@@ -170,6 +176,16 @@ class DatasetProcessor:
                         start_time=start_time,
                         total_work_items=total_work_items,
                     )
+
+        self.stats.processing_time_seconds = time.monotonic() - start_time
+
+        self.config.output_folder.mkdir(parents=True, exist_ok=True)
+        if self.config.options.generate_summary_report:
+            write_summary_report(self.config.output_folder, self.stats)
+        if self.config.options.generate_missing_image_report:
+            write_missing_image_report(self.config.output_folder, self.stats)
+
+        return self.stats
 
     def _process_single_label_sheet(
         self,
@@ -323,16 +339,6 @@ class DatasetProcessor:
             self._emit_progress(
                 sheet_name, record.image_names[0], start_time, total_work_items
             )
-
-        self.stats.processing_time_seconds = time.monotonic() - start_time
-
-        self.config.output_folder.mkdir(parents=True, exist_ok=True)
-        if self.config.options.generate_summary_report:
-            write_summary_report(self.config.output_folder, self.stats)
-        if self.config.options.generate_missing_image_report:
-            write_missing_image_report(self.config.output_folder, self.stats)
-
-        return self.stats
 
     def _validate_inputs(self) -> None:
         validate_directory(self.config.dataset_folder, "Dataset folder")

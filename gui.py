@@ -537,9 +537,11 @@ class DatasetOrganizerApp(ctk.CTk):
 
     def _browse_workbook(self) -> None:
         path = filedialog.askopenfilename(
-            title="Choose Excel Workbook",
+            title="Choose Data File",
             filetypes=[
+                ("Supported files", "*.xlsx *.xlsm *.xltx *.xltm *.csv"),
                 ("Excel workbooks", "*.xlsx *.xlsm *.xltx *.xltm"),
+                ("CSV files", "*.csv"),
                 ("All files", "*.*"),
             ],
         )
