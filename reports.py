@@ -34,8 +34,25 @@ def write_summary_report(output_folder: Path, stats: "ProcessingStats") -> Path:
         f"Processing Time: {format_duration(stats.processing_time_seconds)}",
     ])
 
+    # Multi-label specific stats (only present in multi-label mode)
+    if stats.total_rows_processed > 0:
+        lines.append("")
+        lines.append("Multi-Label Details")
+        lines.append("-------------------")
+        lines.append(f"Total Rows Processed: {stats.total_rows_processed}")
+        lines.append(f"Images Skipped (not found): {stats.images_skipped}")
+        lines.append(f"Rows With Multiple Labels: {stats.multi_label_rows}")
+        lines.append(f"Rows With No Selected Label: {stats.no_label_rows}")
+
+        if stats.copies_per_folder:
+            lines.append("")
+            lines.append("Copies Per Folder:")
+            for folder, count in sorted(stats.copies_per_folder.items()):
+                lines.append(f"  - {folder}: {count}")
+
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
 
 
 def write_missing_image_report(output_folder: Path, stats: "ProcessingStats") -> Path:

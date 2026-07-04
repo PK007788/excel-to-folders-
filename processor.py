@@ -21,6 +21,9 @@ class ProcessingOptions:
 
     file_column: str = "Image name"
     label_column: str = "Retinopathy grade"
+    multi_label_mode: bool = False
+    file_columns: tuple[str, ...] = ()
+    label_columns: tuple[str, ...] = ()
     prefix_base_folder_name: bool = True
     generate_summary_report: bool = True
     generate_missing_image_report: bool = True
@@ -58,6 +61,12 @@ class ProcessingStats:
     skipped_rows: int = 0
     processing_time_seconds: float = 0.0
     missing_entries: list[MissingEntry] = field(default_factory=list)
+    # Multi-label specific stats
+    total_rows_processed: int = 0
+    images_skipped: int = 0
+    multi_label_rows: int = 0
+    no_label_rows: int = 0
+    copies_per_folder: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -141,65 +150,179 @@ class DatasetProcessor:
 
                 log.info(f"Processing worksheet '{sheet_name}' with folder '{base_folder}'.")
 
-                for record in reader.iter_image_records(
-                    sheet_name,
-                    self.config.options.file_column,
-                    self.config.options.label_column,
-                ):
-                    if self.cancel_event.is_set():
-                        log.warning("Processing cancelled by user.")
-                        break
+                if self.config.options.multi_label_mode:
+                    self._process_multi_label_sheet(
+                        reader=reader,
+                        sheet_name=sheet_name,
+                        base_folder=base_folder,
+                        file_manager=file_manager,
+                        log=log,
+                        start_time=start_time,
+                        total_work_items=total_work_items,
+                    )
+                else:
+                    self._process_single_label_sheet(
+                        reader=reader,
+                        sheet_name=sheet_name,
+                        base_folder=base_folder,
+                        file_manager=file_manager,
+                        log=log,
+                        start_time=start_time,
+                        total_work_items=total_work_items,
+                    )
 
-                    image_name = record.image_name
-                    label = record.label
+    def _process_single_label_sheet(
+        self,
+        reader: ExcelReader,
+        sheet_name: str,
+        base_folder: Path,
+        file_manager: FileManager,
+        log: ProcessingLogger,
+        start_time: float,
+        total_work_items: int,
+    ) -> None:
+        """Process a single sheet using the original single-label logic."""
+        for record in reader.iter_image_records(
+            sheet_name,
+            self.config.options.file_column,
+            self.config.options.label_column,
+        ):
+            if self.cancel_event.is_set():
+                log.warning("Processing cancelled by user.")
+                break
 
-                    if not image_name:
-                        self.stats.skipped_rows += 1
-                        log.warning(
-                            f"Skipped blank image name in sheet '{sheet_name}', "
-                            f"row {record.row_number}."
-                        )
-                        self._emit_progress(sheet_name, image_name, start_time, total_work_items)
-                        continue
+            image_name = record.image_name
+            label = record.label
 
-                    if not label:
-                        self.stats.skipped_rows += 1
-                        log.warning(
-                            f"Skipped '{image_name}' in sheet '{sheet_name}', "
-                            f"row {record.row_number}: blank label."
-                        )
-                        self._emit_progress(sheet_name, image_name, start_time, total_work_items)
-                        continue
+            if not image_name:
+                self.stats.skipped_rows += 1
+                log.warning(
+                    f"Skipped blank image name in sheet '{sheet_name}', "
+                    f"row {record.row_number}."
+                )
+                self._emit_progress(sheet_name, image_name, start_time, total_work_items)
+                continue
 
-                    source_path = base_folder / image_name
-                    if not source_path.exists() or not source_path.is_file():
-                        self._record_missing(
-                            sheet_name=sheet_name,
-                            image_name=image_name,
-                            reason=f"Image not found: {source_path}",
-                            log=log,
-                        )
-                        self._emit_progress(sheet_name, image_name, start_time, total_work_items)
-                        continue
+            if not label:
+                self.stats.skipped_rows += 1
+                log.warning(
+                    f"Skipped '{image_name}' in sheet '{sheet_name}', "
+                    f"row {record.row_number}: blank label."
+                )
+                self._emit_progress(sheet_name, image_name, start_time, total_work_items)
+                continue
 
-                    destination_path, renamed = file_manager.copy_image(
+            source_path = base_folder / image_name
+            if not source_path.exists() or not source_path.is_file():
+                self._record_missing(
+                    sheet_name=sheet_name,
+                    image_name=image_name,
+                    reason=f"Image not found: {source_path}",
+                    log=log,
+                )
+                self._emit_progress(sheet_name, image_name, start_time, total_work_items)
+                continue
+
+            destination_path, renamed = file_manager.copy_image(
+                source_path=source_path,
+                base_folder_name=sheet_name,
+                label=label,
+                prefix_base_folder_name=(
+                    self.config.options.prefix_base_folder_name
+                ),
+            )
+
+            if renamed:
+                self.stats.duplicate_filenames_renamed += 1
+
+            self.stats.total_images_processed += 1
+            self.stats.label_counts[label] = self.stats.label_counts.get(label, 0) + 1
+
+            action = "Would copy" if self.config.options.dry_run_mode else "Copied"
+            log.info(f"{action}: {source_path} -> {destination_path}")
+            self._emit_progress(sheet_name, image_name, start_time, total_work_items)
+
+    def _process_multi_label_sheet(
+        self,
+        reader: ExcelReader,
+        sheet_name: str,
+        base_folder: Path,
+        file_manager: FileManager,
+        log: ProcessingLogger,
+        start_time: float,
+        total_work_items: int,
+    ) -> None:
+        """Process a single sheet using multi-label logic."""
+        for record in reader.iter_multi_label_records(
+            sheet_name,
+            list(self.config.options.file_columns),
+            list(self.config.options.label_columns),
+        ):
+            if self.cancel_event.is_set():
+                log.warning("Processing cancelled by user.")
+                break
+
+            self.stats.total_rows_processed += 1
+
+            if not record.image_names:
+                self.stats.skipped_rows += 1
+                log.warning(
+                    f"Skipped row {record.row_number} in sheet '{sheet_name}': "
+                    f"no image names found in selected columns."
+                )
+                self._emit_progress(sheet_name, "", start_time, total_work_items)
+                continue
+
+            if not record.active_labels:
+                self.stats.no_label_rows += 1
+                self.stats.skipped_rows += 1
+                log.info(
+                    f"Row {record.row_number} in sheet '{sheet_name}': "
+                    f"no selected label columns have value 1. Skipping."
+                )
+                self._emit_progress(sheet_name, "", start_time, total_work_items)
+                continue
+
+            if len(record.active_labels) > 1:
+                self.stats.multi_label_rows += 1
+
+            for image_name in record.image_names:
+                source_path = base_folder / image_name
+                if not source_path.exists() or not source_path.is_file():
+                    self._record_missing(
+                        sheet_name=sheet_name,
+                        image_name=image_name,
+                        reason=f"Image not found: {source_path}",
+                        log=log,
+                    )
+                    self.stats.images_skipped += 1
+                    continue
+
+                for label_folder in record.active_labels:
+                    destination_path, renamed = file_manager.copy_image_to_label_folder(
                         source_path=source_path,
+                        label_folder_name=label_folder,
+                        prefix_base_folder_name=self.config.options.prefix_base_folder_name,
                         base_folder_name=sheet_name,
-                        label=label,
-                        prefix_base_folder_name=(
-                            self.config.options.prefix_base_folder_name
-                        ),
                     )
 
                     if renamed:
                         self.stats.duplicate_filenames_renamed += 1
 
                     self.stats.total_images_processed += 1
-                    self.stats.label_counts[label] = self.stats.label_counts.get(label, 0) + 1
+                    self.stats.copies_per_folder[label_folder] = (
+                        self.stats.copies_per_folder.get(label_folder, 0) + 1
+                    )
+                    self.stats.label_counts[label_folder] = (
+                        self.stats.label_counts.get(label_folder, 0) + 1
+                    )
 
                     action = "Would copy" if self.config.options.dry_run_mode else "Copied"
                     log.info(f"{action}: {source_path} -> {destination_path}")
-                    self._emit_progress(sheet_name, image_name, start_time, total_work_items)
+
+            self._emit_progress(
+                sheet_name, record.image_names[0], start_time, total_work_items
+            )
 
         self.stats.processing_time_seconds = time.monotonic() - start_time
 

@@ -60,3 +60,44 @@ class FileManager:
             shutil.copy2(source_path, destination_path)
 
         return destination_path, renamed
+
+    def copy_image_to_label_folder(
+        self,
+        source_path: Path,
+        label_folder_name: str,
+        prefix_base_folder_name: bool,
+        base_folder_name: str,
+    ) -> tuple[Path, bool]:
+        """Copy an image into a folder named after a label column header.
+
+        Returns:
+            A tuple of (destination_path, renamed).
+            renamed is True if the file name was altered to avoid a collision.
+        """
+        target_dir = self.output_folder / label_folder_name
+        if not self.dry_run:
+            target_dir.mkdir(exist_ok=True)
+
+        original_name = source_path.name
+        if prefix_base_folder_name:
+            new_name = f"{base_folder_name}_{original_name}"
+        else:
+            new_name = original_name
+
+        destination_path = target_dir / new_name
+
+        # Handle collisions
+        renamed = False
+        counter = 1
+        stem = destination_path.stem
+        suffix = destination_path.suffix
+
+        while destination_path.exists():
+            renamed = True
+            destination_path = target_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+        if not self.dry_run:
+            shutil.copy2(source_path, destination_path)
+
+        return destination_path, renamed

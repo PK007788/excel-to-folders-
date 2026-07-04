@@ -11,8 +11,66 @@ from tkinter import filedialog, messagebox
 # pyrefly: ignore [missing-import]
 import customtkinter as ctk
 
+from excel_reader import ExcelReader
 from processor import DatasetProcessor, ProcessingConfig, ProcessingOptions
 from utils import format_duration, open_folder
+
+
+class DataPreviewWindow(ctk.CTkToplevel):
+    """Pop-up window that shows the first rows of an Excel sheet."""
+
+    def __init__(self, parent, headers: list[str], rows: list[list[str]], sheet_name: str) -> None:
+        super().__init__(parent)
+        self.title(f"Data Preview — {sheet_name}")
+        self.geometry("900x500")
+        self.minsize(600, 300)
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            self,
+            text=f"First {len(rows)} rows of '{sheet_name}'",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, padx=18, pady=(16, 8), sticky="ew")
+
+        # Scrollable frame for the table
+        scroll_frame = ctk.CTkScrollableFrame(self, orientation="horizontal")
+        scroll_frame.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="nsew")
+
+        # Column headers
+        for col_idx, header in enumerate(headers):
+            lbl = ctk.CTkLabel(
+                scroll_frame,
+                text=header,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                anchor="w",
+                padx=8,
+                pady=4,
+            )
+            lbl.grid(row=0, column=col_idx, padx=2, pady=2, sticky="ew")
+
+        # Data rows
+        for row_idx, row_data in enumerate(rows):
+            for col_idx, cell_value in enumerate(row_data):
+                display = cell_value if len(cell_value) <= 40 else cell_value[:37] + "..."
+                lbl = ctk.CTkLabel(
+                    scroll_frame,
+                    text=display,
+                    anchor="w",
+                    padx=8,
+                    pady=2,
+                )
+                lbl.grid(row=row_idx + 1, column=col_idx, padx=2, pady=1, sticky="ew")
+
+        # Close button
+        ctk.CTkButton(self, text="Close", width=100, command=self.destroy).grid(
+            row=2, column=0, pady=(0, 16)
+        )
+
+        self.lift()
+        self.focus_force()
 
 
 class DatasetOrganizerApp(ctk.CTk):
@@ -21,9 +79,9 @@ class DatasetOrganizerApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
 
-        self.title("Retinal Dataset Organizer")
-        self.geometry("920x680")
-        self.minsize(820, 620)
+        self.title("Dataset Organizer")
+        self.geometry("960x780")
+        self.minsize(860, 720)
 
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
@@ -31,7 +89,7 @@ class DatasetOrganizerApp(ctk.CTk):
         self.dataset_var = tk.StringVar()
         self.workbook_var = tk.StringVar()
         self.output_var = tk.StringVar()
-        
+
         self.file_column_var = tk.StringVar(value="Image name")
         self.label_column_var = tk.StringVar(value="Retinopathy grade")
 
@@ -52,24 +110,32 @@ class DatasetOrganizerApp(ctk.CTk):
         self.cancel_event = threading.Event()
         self.worker: threading.Thread | None = None
 
+        # Multi-label state
+        self._mode_var = tk.StringVar(value="Single Label Dataset")
+        self._multi_image_vars: list[tuple[str, tk.BooleanVar]] = []
+        self._multi_label_vars: list[tuple[str, tk.BooleanVar]] = []
+
         self._build_ui()
         self.after(100, self._poll_queue)
+
+    # ── UI Construction ─────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        container = ctk.CTkFrame(self, corner_radius=0)
+        container = ctk.CTkScrollableFrame(self, corner_radius=0)
         container.grid(row=0, column=0, sticky="nsew")
         container.grid_columnconfigure(0, weight=1)
 
+        # ── Header ──
         header = ctk.CTkFrame(container, fg_color="transparent")
         header.grid(row=0, column=0, padx=28, pady=(24, 12), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
 
         title = ctk.CTkLabel(
             header,
-            text="Retinal Dataset Organizer",
+            text="Dataset Organizer",
             font=ctk.CTkFont(size=26, weight="bold"),
             anchor="w",
         )
@@ -77,12 +143,13 @@ class DatasetOrganizerApp(ctk.CTk):
 
         subtitle = ctk.CTkLabel(
             header,
-            text="Copy images into Yes and No folders using labels from an Excel workbook.",
+            text="Organize image datasets into labelled folders using an Excel workbook.",
             text_color=("gray35", "gray75"),
             anchor="w",
         )
         subtitle.grid(row=1, column=0, pady=(4, 0), sticky="ew")
 
+        # ── Inputs (paths) ──
         inputs = ctk.CTkFrame(container)
         inputs.grid(row=1, column=0, padx=28, pady=12, sticky="ew")
         inputs.grid_columnconfigure(1, weight=1)
@@ -101,6 +168,13 @@ class DatasetOrganizerApp(ctk.CTk):
             variable=self.workbook_var,
             command=self._browse_workbook,
         )
+
+        # Preview Data button (row 1, column 3)
+        self._preview_button = ctk.CTkButton(
+            inputs, text="Preview", width=90, command=self._preview_data
+        )
+        self._preview_button.grid(row=1, column=3, padx=(4, 18), pady=14)
+
         self._add_path_row(
             inputs,
             row=2,
@@ -108,21 +182,91 @@ class DatasetOrganizerApp(ctk.CTk):
             variable=self.output_var,
             command=self._browse_output,
         )
+
+        # ── Mode Toggle ──
+        mode_frame = ctk.CTkFrame(container)
+        mode_frame.grid(row=2, column=0, padx=28, pady=12, sticky="ew")
+        mode_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            mode_frame,
+            text="Processing Mode",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, padx=18, pady=(16, 8), sticky="ew")
+
+        self._mode_toggle = ctk.CTkSegmentedButton(
+            mode_frame,
+            values=["Single Label Dataset", "Multi-Label Dataset"],
+            variable=self._mode_var,
+            command=self._on_mode_changed,
+        )
+        self._mode_toggle.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="ew")
+
+        # ── Single-label column inputs ──
+        self._single_label_frame = ctk.CTkFrame(container)
+        self._single_label_frame.grid(row=3, column=0, padx=28, pady=12, sticky="ew")
+        self._single_label_frame.grid_columnconfigure(1, weight=1)
+
         self._add_text_row(
-            inputs,
-            row=3,
+            self._single_label_frame,
+            row=0,
             label="File Name Column",
             variable=self.file_column_var,
         )
         self._add_text_row(
-            inputs,
-            row=4,
+            self._single_label_frame,
+            row=1,
             label="Label Column",
             variable=self.label_column_var,
         )
 
+        # ── Multi-label column inputs ──
+        self._multi_label_frame = ctk.CTkFrame(container)
+        self._multi_label_frame.grid_columnconfigure(0, weight=1)
+        self._multi_label_frame.grid_columnconfigure(1, weight=1)
+        # Hidden by default — not gridded yet
+
+        self._load_columns_button = ctk.CTkButton(
+            self._multi_label_frame,
+            text="Load Columns from Workbook",
+            command=self._load_columns,
+        )
+        self._load_columns_button.grid(
+            row=0, column=0, columnspan=2, padx=18, pady=(16, 8), sticky="ew"
+        )
+
+        ctk.CTkLabel(
+            self._multi_label_frame,
+            text="Image Columns",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=1, column=0, padx=18, pady=(8, 4), sticky="ew")
+
+        ctk.CTkLabel(
+            self._multi_label_frame,
+            text="Label Columns",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=1, column=1, padx=18, pady=(8, 4), sticky="ew")
+
+        self._image_col_scroll = ctk.CTkScrollableFrame(
+            self._multi_label_frame, height=140
+        )
+        self._image_col_scroll.grid(
+            row=2, column=0, padx=18, pady=(0, 16), sticky="nsew"
+        )
+
+        self._label_col_scroll = ctk.CTkScrollableFrame(
+            self._multi_label_frame, height=140
+        )
+        self._label_col_scroll.grid(
+            row=2, column=1, padx=18, pady=(0, 16), sticky="nsew"
+        )
+
+        # ── Options ──
         options = ctk.CTkFrame(container)
-        options.grid(row=2, column=0, padx=28, pady=12, sticky="ew")
+        options.grid(row=5, column=0, padx=28, pady=12, sticky="ew")
         options.grid_columnconfigure((0, 1), weight=1)
 
         ctk.CTkLabel(
@@ -156,8 +300,9 @@ class DatasetOrganizerApp(ctk.CTk):
             variable=self.dry_run_var,
         ).grid(row=2, column=1, padx=18, pady=(8, 16), sticky="w")
 
+        # ── Progress ──
         progress = ctk.CTkFrame(container)
-        progress.grid(row=3, column=0, padx=28, pady=12, sticky="nsew")
+        progress.grid(row=6, column=0, padx=28, pady=12, sticky="nsew")
         progress.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         ctk.CTkLabel(
@@ -179,8 +324,9 @@ class DatasetOrganizerApp(ctk.CTk):
         self._add_stat(progress, "Estimated Time Remaining", self.remaining_var, 4, 1)
         self._add_stat(progress, "Status", self.status_var, 4, 2)
 
+        # ── Action Buttons ──
         actions = ctk.CTkFrame(container, fg_color="transparent")
-        actions.grid(row=4, column=0, padx=28, pady=(12, 24), sticky="ew")
+        actions.grid(row=7, column=0, padx=28, pady=(12, 24), sticky="ew")
         actions.grid_columnconfigure(0, weight=1)
 
         button_frame = ctk.CTkFrame(actions, fg_color="transparent")
@@ -212,6 +358,11 @@ class DatasetOrganizerApp(ctk.CTk):
             command=self._open_output,
         )
         self.open_button.grid(row=0, column=2)
+
+        # Store the container reference for mode switching
+        self._container = container
+
+    # ── Reusable row builders ───────────────────────────────────────
 
     def _add_path_row(
         self,
@@ -280,6 +431,105 @@ class DatasetOrganizerApp(ctk.CTk):
             wraplength=180,
         ).grid(row=1, column=0, sticky="ew")
 
+    # ── Mode Switching ──────────────────────────────────────────────
+
+    def _on_mode_changed(self, value: str) -> None:
+        """Toggle between single-label and multi-label column panels."""
+        if value == "Single Label Dataset":
+            self._multi_label_frame.grid_forget()
+            self._single_label_frame.grid(
+                row=3, column=0, padx=28, pady=12, sticky="ew"
+            )
+        else:
+            self._single_label_frame.grid_forget()
+            self._multi_label_frame.grid(
+                row=3, column=0, padx=28, pady=12, sticky="ew"
+            )
+
+    # ── Multi-label column loading ──────────────────────────────────
+
+    def _load_columns(self) -> None:
+        """Read column headers from the workbook and populate checkbox lists."""
+        workbook = self.workbook_var.get().strip()
+        if not workbook:
+            messagebox.showwarning("No Workbook", "Please select an Excel workbook first.")
+            return
+
+        try:
+            reader = ExcelReader(Path(workbook))
+            sheets = reader.get_sheet_names()
+            if not sheets:
+                messagebox.showwarning("Empty Workbook", "The workbook has no sheets.")
+                return
+            columns = reader.get_column_names(sheets[0])
+            if not columns:
+                messagebox.showwarning("No Columns", "No columns found in the first sheet.")
+                return
+        except Exception as exc:
+            messagebox.showerror("Load Error", str(exc))
+            return
+
+        # Clear previous checkboxes
+        for widget in self._image_col_scroll.winfo_children():
+            widget.destroy()
+        for widget in self._label_col_scroll.winfo_children():
+            widget.destroy()
+
+        self._multi_image_vars.clear()
+        self._multi_label_vars.clear()
+
+        for col_name in columns:
+            # Image column checkbox
+            img_var = tk.BooleanVar(value=False)
+            self._multi_image_vars.append((col_name, img_var))
+            ctk.CTkCheckBox(
+                self._image_col_scroll,
+                text=col_name,
+                variable=img_var,
+            ).pack(anchor="w", padx=8, pady=3)
+
+            # Label column checkbox
+            lbl_var = tk.BooleanVar(value=False)
+            self._multi_label_vars.append((col_name, lbl_var))
+            ctk.CTkCheckBox(
+                self._label_col_scroll,
+                text=col_name,
+                variable=lbl_var,
+            ).pack(anchor="w", padx=8, pady=3)
+
+        messagebox.showinfo(
+            "Columns Loaded",
+            f"Found {len(columns)} columns in sheet '{sheets[0]}'.\n"
+            "Select your image and label columns.",
+        )
+
+    # ── Data Preview ────────────────────────────────────────────────
+
+    def _preview_data(self) -> None:
+        """Open a preview window showing the first rows of the Excel file."""
+        workbook = self.workbook_var.get().strip()
+        if not workbook:
+            messagebox.showwarning("No Workbook", "Please select an Excel workbook first.")
+            return
+
+        try:
+            reader = ExcelReader(Path(workbook))
+            sheets = reader.get_sheet_names()
+            if not sheets:
+                messagebox.showwarning("Empty Workbook", "The workbook has no sheets.")
+                return
+            headers, rows = reader.get_preview_rows(sheets[0])
+            if not headers:
+                messagebox.showwarning("No Data", "Could not read data from the first sheet.")
+                return
+        except Exception as exc:
+            messagebox.showerror("Preview Error", str(exc))
+            return
+
+        DataPreviewWindow(self, headers, rows, sheets[0])
+
+    # ── File Browsing ───────────────────────────────────────────────
+
     def _browse_dataset(self) -> None:
         path = filedialog.askdirectory(title="Choose Dataset Folder")
         if path:
@@ -300,6 +550,8 @@ class DatasetOrganizerApp(ctk.CTk):
         path = filedialog.askdirectory(title="Choose Output Folder")
         if path:
             self.output_var.set(path)
+
+    # ── Processing ──────────────────────────────────────────────────
 
     def _start_processing(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -334,26 +586,62 @@ class DatasetOrganizerApp(ctk.CTk):
             raise ValueError("Please choose an Excel workbook.")
         if not output:
             raise ValueError("Please choose an output folder.")
-            
-        file_column = self.file_column_var.get().strip()
-        label_column = self.label_column_var.get().strip()
-        
-        if not file_column or not label_column:
-            raise ValueError("Please specify both File Name Column and Label Column.")
 
-        return ProcessingConfig(
-            dataset_folder=Path(dataset),
-            workbook_path=Path(workbook),
-            output_folder=Path(output),
-            options=ProcessingOptions(
-                file_column=file_column,
-                label_column=label_column,
-                prefix_base_folder_name=self.prefix_var.get(),
-                generate_summary_report=self.summary_var.get(),
-                generate_missing_image_report=self.missing_var.get(),
-                dry_run_mode=self.dry_run_var.get(),
-            ),
-        )
+        is_multi = self._mode_var.get() == "Multi-Label Dataset"
+
+        if is_multi:
+            file_columns = tuple(
+                name for name, var in self._multi_image_vars if var.get()
+            )
+            label_columns = tuple(
+                name for name, var in self._multi_label_vars if var.get()
+            )
+
+            if not file_columns:
+                raise ValueError(
+                    "Please select at least one Image Column.\n"
+                    "Click 'Load Columns from Workbook' first."
+                )
+            if not label_columns:
+                raise ValueError(
+                    "Please select at least one Label Column.\n"
+                    "Click 'Load Columns from Workbook' first."
+                )
+
+            return ProcessingConfig(
+                dataset_folder=Path(dataset),
+                workbook_path=Path(workbook),
+                output_folder=Path(output),
+                options=ProcessingOptions(
+                    multi_label_mode=True,
+                    file_columns=file_columns,
+                    label_columns=label_columns,
+                    prefix_base_folder_name=self.prefix_var.get(),
+                    generate_summary_report=self.summary_var.get(),
+                    generate_missing_image_report=self.missing_var.get(),
+                    dry_run_mode=self.dry_run_var.get(),
+                ),
+            )
+        else:
+            file_column = self.file_column_var.get().strip()
+            label_column = self.label_column_var.get().strip()
+
+            if not file_column or not label_column:
+                raise ValueError("Please specify both File Name Column and Label Column.")
+
+            return ProcessingConfig(
+                dataset_folder=Path(dataset),
+                workbook_path=Path(workbook),
+                output_folder=Path(output),
+                options=ProcessingOptions(
+                    file_column=file_column,
+                    label_column=label_column,
+                    prefix_base_folder_name=self.prefix_var.get(),
+                    generate_summary_report=self.summary_var.get(),
+                    generate_missing_image_report=self.missing_var.get(),
+                    dry_run_mode=self.dry_run_var.get(),
+                ),
+            )
 
     def _run_worker(self, config: ProcessingConfig) -> None:
         processor = DatasetProcessor(
@@ -412,13 +700,21 @@ class DatasetOrganizerApp(ctk.CTk):
         if stats.label_counts:
             lines.append("Counts:")
             for label, count in sorted(stats.label_counts.items()):
-                lines.append(f"  - {label.capitalize()}: {count}")
-                
+                lines.append(f"  - {label}: {count}")
+
         lines.extend([
             f"Missing images/folders: {stats.missing_images}",
             f"Skipped rows: {stats.skipped_rows}",
             f"Time: {format_duration(stats.processing_time_seconds)}"
         ])
+
+        # Multi-label specific info
+        if stats.total_rows_processed > 0:
+            lines.append("")
+            lines.append(f"Rows processed: {stats.total_rows_processed}")
+            lines.append(f"Multi-label rows: {stats.multi_label_rows}")
+            lines.append(f"No-label rows: {stats.no_label_rows}")
+
         return "\n".join(lines)
 
     def _cancel_processing(self) -> None:

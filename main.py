@@ -1,4 +1,4 @@
-"""Entry point for the retinal image dataset organizer."""
+"""Entry point for the dataset organizer."""
 
 from gui import DatasetOrganizerApp
 

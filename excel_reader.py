@@ -20,6 +20,15 @@ class ImageRecord:
     row_number: int
 
 
+@dataclass(frozen=True)
+class MultiLabelRecord:
+    """One row from an Excel worksheet with multiple image columns and binary label columns."""
+
+    image_names: list[str]
+    active_labels: list[str]
+    row_number: int
+
+
 class ExcelReader:
     """Read worksheet names and image-label rows from columns B and C."""
 
@@ -85,3 +94,93 @@ class ExcelReader:
                 continue
 
         return total
+
+    def get_column_names(self, sheet_name: str) -> list[str]:
+        """Return column header names for the given sheet."""
+        try:
+            frame = pd.read_excel(
+                self.workbook_path,
+                sheet_name=sheet_name,
+                header=0,
+                nrows=0,
+                engine="openpyxl",
+            )
+        except Exception:
+            return []
+
+        return [str(c).strip() for c in frame.columns]
+
+    def get_preview_rows(
+        self, sheet_name: str, max_rows: int = 10
+    ) -> tuple[list[str], list[list[str]]]:
+        """Return (headers, rows) for a data preview table."""
+        try:
+            frame = pd.read_excel(
+                self.workbook_path,
+                sheet_name=sheet_name,
+                header=0,
+                dtype=str,
+                nrows=max_rows,
+                engine="openpyxl",
+            )
+        except Exception:
+            return [], []
+
+        headers = [str(c).strip() for c in frame.columns]
+        rows: list[list[str]] = []
+        for _, row in frame.iterrows():
+            rows.append(["" if is_blank(row[col]) else str(row[col]).strip() for col in frame.columns])
+
+        return headers, rows
+
+    def iter_multi_label_records(
+        self,
+        sheet_name: str,
+        file_columns: list[str],
+        label_columns: list[str],
+    ) -> Iterator[MultiLabelRecord]:
+        """Yield MultiLabelRecord for each row with binary label columns."""
+        try:
+            frame = pd.read_excel(
+                self.workbook_path,
+                sheet_name=sheet_name,
+                header=0,
+                dtype=str,
+                engine="openpyxl",
+            )
+        except Exception:
+            return
+
+        frame.columns = [str(c).strip() for c in frame.columns]
+
+        # Verify all requested columns exist
+        for col in file_columns + label_columns:
+            if col not in frame.columns:
+                return
+
+        for index, row in frame.iterrows():
+            # Collect image names from all selected file columns, skip blanks
+            image_names: list[str] = []
+            for col in file_columns:
+                raw = row[col]
+                if not is_blank(raw):
+                    image_names.append(str(raw).strip())
+
+            # Collect active labels (columns where value == 1)
+            active_labels: list[str] = []
+            for col in label_columns:
+                raw = row[col]
+                if not is_blank(raw):
+                    val = str(raw).strip()
+                    if val in ("1", "1.0"):
+                        active_labels.append(col)
+
+            # Skip completely empty rows
+            if not image_names and not active_labels:
+                continue
+
+            yield MultiLabelRecord(
+                image_names=image_names,
+                active_labels=active_labels,
+                row_number=int(index) + 2,
+            )
